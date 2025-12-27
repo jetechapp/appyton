@@ -1,0 +1,13 @@
+{
+  "categories": {
+    "Installation": { "icon": "fa-hard-hat", "subs": ["Protection", "Echafaudage", "Bennes"] },
+    "Démolition": { "icon": "fa-hammer", "subs": ["Cloisons", "Sols", "Evacuation"] },
+    "Plâtrerie": { "icon": "fa-layer-group", "subs": ["Cloisons", "Doublages", "Faux-Plafonds"] },
+    "Peinture": { "icon": "fa-paint-roller", "subs": ["Préparation", "Murs", "Plafonds"] },
+    "Electricité": { "icon": "fa-bolt", "subs": ["Tableau", "Prises", "Eclairage"] }
+  },
+  "demolition_db": [
+    { "ref": "DEM-25-001", "title": "Démolition Balcon BA", "desc": "Démolition soignée de balcon en béton armé.", "unit": "U", "time": 17.18, "mat": 450.09 },
+    { "ref": "DEM-25-002", "title": "Démolition Mur Pierre (50cm)", "desc": "Déconstruction manuelle de mur porteur.", "unit": "M2", "time": 2.95, "mat": 0.00 }
+  ]
+}
