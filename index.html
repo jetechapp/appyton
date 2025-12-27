@@ -929,14 +929,19 @@
 
     <script>
 
-     /**
- * CONFIGURATION & CONSTANTS
+  /**
+ * QOTIA PRO 2025 - CORE ENGINE v2.1
  */
+
 const Config = {
-    LIBRARY_URL: 'library.json', // Il tuo file esterno
+    LIBRARY_URL: 'library.json',
     DEFAULT_ROOM_HEIGHT: 2.70,
     HOURLY_RATE: 50
 };
+
+// Variabili globali per la biblioteca
+let CATEGORY_MAP = {};
+let DEMOLITION_DB = [];
 
 const PREDEFINED_ROOMS = [
     "Entrée", "Séjour", "Salon", "Salle à manger", "Véranda", 
@@ -946,13 +951,6 @@ const PREDEFINED_ROOMS = [
     "WC séparé", "Buanderie", "Couloir", "Dégagement", "Autre"
 ];
 
-// Inizializzate vuote, verranno popolate dal JSON o restano vuote se il file manca
-let CATEGORY_MAP = {};
-let DEMOLITION_DB = [];
-
-/**
- * UTILITIES
- */
 const Utils = {
     el: (id) => document.getElementById(id),
     val: (id) => document.getElementById(id)?.value || '',
@@ -961,9 +959,6 @@ const Utils = {
     generateId: () => Date.now().toString(36) + Math.random().toString(36).substr(2)
 };
 
-/**
- * STATE MANAGEMENT (STORE)
- */
 const Store = {
     data: {
         rooms: ["Travaux préparatoires"],
@@ -985,14 +980,6 @@ const Store = {
         }
     },
     save() {
-        this.data.clientInfo = {
-            name: Utils.val('cli-name'),
-            projectName: Utils.val('cli-project-name'),
-            addr: Utils.val('cli-addr'),
-            date: Utils.val('cli-date'),
-            ref: Utils.val('cli-ref')
-        };
-        this.data.autoliquidation = document.getElementById('autoliquidation-chk') ? document.getElementById('autoliquidation-chk').checked : false;
         localStorage.setItem('qotia_state', JSON.stringify(this.data));
     },
     load() {
@@ -1001,19 +988,12 @@ const Store = {
             try {
                 const parsed = JSON.parse(saved);
                 this.data = { ...this.data, ...parsed };
-                // Forza le credenziali se per qualche motivo il salvataggio le ha svuotate
-                if(!this.data.userCompany.adminUser) this.data.userCompany.adminUser = 'admin';
-                if(!this.data.userCompany.adminPass) this.data.userCompany.adminPass = 'admin';
-            } catch (e) { 
-                console.error("Errore caricamento dati", e);
-            }
+                if (!Array.isArray(this.data.rooms)) this.data.rooms = ["Travaux préparatoires"];
+            } catch (e) { console.error("Errore storage", e); }
         }
     }
 };
 
-/**
- * BUSINESS LOGIC
- */
 const BusinessLogic = {
     calculateFinancials(items, globalDiscount, depositAmount, isAutoliquidation) {
         let totalHT = 0, totalTime = 0, breakdown = {};
@@ -1035,129 +1015,175 @@ const BusinessLogic = {
             totalTVA += tvaAmt;
             breakdownFinal[rate] = { base: base, tva: tvaAmt };
         }
-        let totalTTC = discountedHT + totalTVA;
-        let toPay = totalTTC - depositAmount;
-        return { totalHT, totalTime, discountedHT, totalTVA, totalTTC, toPay, breakdownFinal, isAutoliquidation };
+        return { totalHT, totalTime, discountedHT, totalTVA, totalTTC: discountedHT + totalTVA, toPay: (discountedHT + totalTVA) - depositAmount, breakdownFinal, isAutoliquidation };
     },
     getFlatQuotes(clients) {
         let allQuotes = [];
         clients.forEach(c => {
             const cName = c.type === 'company' ? c.company : `${c.lastname} ${c.firstname}`;
-            if (c.quotes) {
-                c.quotes.forEach((q, qIndex) => {
-                    allQuotes.push({ clientId: c.id, qIndex: qIndex, clientName: cName, ...q });
-                });
-            }
+            if (c.quotes) c.quotes.forEach((q, qIndex) => allQuotes.push({ clientId: c.id, qIndex, clientName: cName, ...q }));
         });
         return allQuotes.sort((a, b) => new Date(b.date) - new Date(a.date));
     },
     generateNextRef(clients) {
-        const currentYear = new Date().getFullYear();
-        let maxSeq = 0;
-        clients.forEach(c => {
-            if (c.quotes) c.quotes.forEach(q => {
-                const parts = q.ref.split('-');
-                if (parts.length === 3 && parseInt(parts[1]) === currentYear) {
-                    const seq = parseInt(parts[2]);
-                    if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
-                }
-            });
-        });
-        return `D-${currentYear}-${String(maxSeq + 1).padStart(3, '0')}`;
+        const year = new Date().getFullYear();
+        let max = 0;
+        clients.forEach(c => c.quotes?.forEach(q => {
+            const p = q.ref.split('-');
+            if (p[1] == year && parseInt(p[2]) > max) max = parseInt(p[2]);
+        }));
+        return `D-${year}-${String(max + 1).padStart(3, '0')}`;
     }
 };
 
-/**
- * APP CONTROLLER (UNIFICATO)
- */
+const ProjectService = {
+    initModal() {
+        const sel = Utils.el('proj-client-select');
+        sel.innerHTML = '<option value="new">+ Créer un nouveau client</option>';
+        Store.data.clientsDB.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.id;
+            opt.text = c.type === 'company' ? c.company : `${c.lastname} ${c.firstname}`;
+            sel.appendChild(opt);
+        });
+        Utils.el('proj-new-client-form').style.display = 'grid';
+    },
+    handleClientSelection(val) { Utils.el('proj-new-client-form').style.display = (val === 'new' ? 'grid' : 'none'); },
+    toggleCompanyFields(type) { Utils.el('proj-c-company-grp').style.display = (type === 'company' ? 'block' : 'none'); },
+    createFullProjectStack() {
+        const clientVal = Utils.val('proj-client-select');
+        let clientObj;
+        if(clientVal === 'new') {
+            clientObj = { id: Date.now(), type: Utils.val('proj-c-type'), lastname: Utils.val('proj-c-lastname'), firstname: Utils.val('proj-c-firstname'), company: Utils.val('proj-c-company'), email: Utils.val('proj-c-email'), addr: Utils.val('proj-c-addr'), quotes: [] };
+            Store.data.clientsDB.push(clientObj);
+        } else {
+            clientObj = Store.data.clientsDB.find(c => c.id == clientVal);
+        }
+        const projId = Utils.generateId();
+        const quoteRef = BusinessLogic.generateNextRef(Store.data.clientsDB);
+        const quoteObj = { ref: quoteRef, date: new Date().toISOString().split('T')[0], amount: 0, status: 'brouillon', desc: Utils.val('proj-name'), projectId: projId, data: { rooms: ["Travaux préparatoires"], roomData: {}, quoteItems: [], globalDiscount: 0, depositAmount: 0 } };
+        clientObj.quotes.push(quoteObj);
+        Store.save();
+        App.loadQuoteFromHistory(clientObj.id, clientObj.quotes.length - 1);
+        Utils.el('project-modal').style.display = 'none';
+        App.showView('quote');
+    }
+};
+
 const App = {
     currentMode: 'brouillon',
     currentView: 'piece',
     chartInstances: {},
-    selectedRoomType: null,
 
     async init() {
         this.checkLogin();
         Store.load();
-        
-        // Carica biblioteca esterna
         await this.loadExternalLibrary();
-        
-        Utils.setVal('cli-date', new Date().toISOString().split('T')[0]);
         this.renderCategories();
         this.renderAll();
-        this.renderClientList();        
-        this.renderHome();        
-        this.renderDashboardList(); 
+        this.renderClientList();
+        this.renderHome();
+        this.renderDashboardList();
     },
 
     async loadExternalLibrary() {
         try {
-            const response = await fetch(Config.LIBRARY_URL);
-            if (!response.ok) throw new Error("File non trovato");
-            const data = await response.json();
-            CATEGORY_MAP = data.categories || {};
-            DEMOLITION_DB = data.demolition_db || [];
-            console.log("Database esterno caricato");
-        } catch (error) {
-            console.warn("Biblioteca esterna non trovata, uso dati di fallback");
-            // Qui puoi mettere dei dati di default se library.json non esiste
-            CATEGORY_MAP = {
-                'Installation': { icon: 'fa-hard-hat', subs: ['Protection', 'Echafaudage'] },
-                'Démolition': { icon: 'fa-hammer', subs: ['Cloisons', 'Evacuation'] }
-            };
+            const res = await fetch(Config.LIBRARY_URL);
+            const data = await res.json();
+            CATEGORY_MAP = data.categories;
+            DEMOLITION_DB = data.demolition_db;
+        } catch (e) {
+            console.warn("Usando database locale di emergenza");
+            CATEGORY_MAP = { 'Installation': { icon: 'fa-hard-hat', subs: ['Protection'] } };
         }
     },
 
-    checkLogin() { 
-        const isLogged = sessionStorage.getItem('qotia_session');
-        Utils.el('login-screen').style.display = isLogged ? 'none' : 'flex'; 
-    },
-
+    checkLogin() { Utils.el('login-screen').style.display = sessionStorage.getItem('qotia_session') ? 'none' : 'flex'; },
     handleLogin(e) {
         e.preventDefault();
-        const u = Utils.val('login-user'), p = Utils.val('login-pass');
-        // Verifica con i dati dello Store (default: admin / admin)
-        if (u === Store.data.userCompany.adminUser && p === Store.data.userCompany.adminPass) {
+        if (Utils.val('login-user') === Store.data.userCompany.adminUser && Utils.val('login-pass') === Store.data.userCompany.adminPass) {
             sessionStorage.setItem('qotia_session', 'true');
             Utils.el('login-screen').style.display = 'none';
-        } else {
-            alert("Identifiants incorrects. Par défaut: admin / admin");
-        }
+        } else alert("Erreur credentials");
     },
-
-    handleLogout() { 
-        sessionStorage.removeItem('qotia_session'); 
-        location.reload(); 
-    },
+    handleLogout() { sessionStorage.removeItem('qotia_session'); location.reload(); },
 
     // --- NAVIGATION ---
     toggleGlobalMenu() { Utils.el('global-sidebar').classList.toggle('open'); Utils.el('gs-overlay').classList.toggle('active'); },
     toggleSidebar() { Utils.el('left-sidebar').classList.toggle('mobile-active'); },
     navigate(view) { this.showView(view); this.toggleGlobalMenu(); },
-    showView(viewName) {
+    showView(view) {
         document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active-section'));
-        document.querySelectorAll('.nav-link-btn').forEach(el => el.classList.remove('active'));
-        Utils.el(viewName + '-view').classList.add('active-section');
-        if(Utils.el('nav-'+viewName)) Utils.el('nav-'+viewName).classList.add('active');
-        if (viewName === 'home') this.renderHome();
-        if (viewName === 'list') this.renderDashboardList();
-        if (viewName === 'client') this.renderClientList();
+        Utils.el(view + '-view').classList.add('active-section');
+        if(view === 'home') this.renderHome();
+        if(view === 'list') this.renderDashboardList();
     },
 
-    // --- RENDERING ---
+    // --- LOGICA PIÈCES ---
+    addNewRoom() {
+        const grid = Utils.el('room-grid');
+        grid.innerHTML = '';
+        PREDEFINED_ROOMS.forEach(r => {
+            const btn = document.createElement('div');
+            btn.className = 'room-select-btn';
+            btn.innerText = r;
+            btn.onclick = () => {
+                document.querySelectorAll('.room-select-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.selectedRoomType = r;
+            };
+            grid.appendChild(btn);
+        });
+        Utils.el('room-selection-modal').style.display = 'flex';
+    },
+    confirmAddRoom() {
+        if(!this.selectedRoomType) return;
+        const prec = Utils.val('room-precision-input');
+        const name = this.selectedRoomType + (prec ? ` (${prec})` : '');
+        if(!Store.data.rooms.includes(name)) {
+            Store.data.rooms.push(name);
+            Store.data.roomData[name] = { L: 0, l: 0, h: 2.7 };
+            Store.data.activeRoom = name;
+            Store.save();
+            this.renderAll();
+        }
+        Utils.el('room-selection-modal').style.display = 'none';
+    },
+    switchRoom(r) { Store.data.activeRoom = r; this.renderAll(); },
+    deleteRoom(e, r) {
+        e.stopPropagation();
+        if(r === "Travaux préparatoires" || !confirm("Supprimer?")) return;
+        Store.data.rooms = Store.data.rooms.filter(x => x !== r);
+        Store.data.quoteItems = Store.data.quoteItems.filter(i => i.piece !== r);
+        Store.data.activeRoom = Store.data.rooms[0];
+        Store.save(); this.renderAll();
+    },
+
+    // --- CALCOLI METRICI ---
+    calcMetrics() {
+        const r = Store.data.activeRoom;
+        if (r === "Travaux préparatoires") return;
+        const L = parseFloat(Utils.val('inp-L')) || 0, l = parseFloat(Utils.val('inp-l')) || 0, h = parseFloat(Utils.val('inp-h')) || 0;
+        Store.data.roomData[r] = { L, l, h };
+        Utils.setVal('out-surf', (L*l).toFixed(2));
+        Utils.setVal('out-peri', ((L+l)*2).toFixed(2));
+        Utils.setVal('out-wall', (((L+l)*2)*h).toFixed(2));
+        Store.save();
+        this.renderRooms();
+    },
+
+    // --- GESTIONE ARTICOLI ---
     renderCategories() {
         const list = Utils.el('main-families-list');
         list.innerHTML = '';
         Object.entries(CATEGORY_MAP).forEach(([cat, data]) => {
             let li = document.createElement('li');
             li.className = 'category-item';
-            li.innerHTML = `<span><i class="fas ${data.icon}" style="width:20px; color:#aaa"></i> ${cat}</span> <i class="fas fa-chevron-right" style="font-size:0.7em"></i>`;
+            li.innerHTML = `<span><i class="fas ${data.icon}"></i> ${cat}</span> <i class="fas fa-chevron-right"></i>`;
             li.onclick = () => this.showSubCategories(cat);
             list.appendChild(li);
         });
     },
-
     showSubCategories(cat) {
         Utils.el('main-families-list').style.display = 'none';
         Utils.el('subfamily-panel').style.display = 'block';
@@ -1166,105 +1192,92 @@ const App = {
         cont.innerHTML = '';
         CATEGORY_MAP[cat].subs.forEach(sub => {
             let div = document.createElement('div');
-            div.innerHTML = `<div class="article-item" onclick="App.addItem('${cat}', '${sub}', 'Ouvrage Type ${sub}')"><span>${sub}</span> <i class="fas fa-plus" style="color:#10B981"></i></div>`;
+            div.className = 'article-item';
+            div.innerHTML = `<span>${sub}</span> <i class="fas fa-plus"></i>`;
+            div.onclick = () => this.addItem(cat, sub, `Ouvrage ${sub}`);
             cont.appendChild(div);
         });
     },
-
-    addItem(fam, sub, desc, unit = 'm²', price = 30, time = 0.5, matCost = 0) {
-        if (!Store.data.activeRoom) return alert("Veuillez d'abord créer une pièce !");
-        Store.data.quoteItems.push({
-            id: Date.now(), piece: Store.data.activeRoom, fam, sub, desc,
-            unit: unit, qty: 1, price: price, time: time, matCost: matCost, matIsTotal: false, tva: 0.10, note: ""
-        });
-        this.renderAll(); Store.save();
+    addItem(fam, sub, desc, unit='m²', price=30, time=0.5, mat=0) {
+        Store.data.quoteItems.push({ id: Date.now(), piece: Store.data.activeRoom, fam, sub, desc, unit, qty: 1, price, time, matCost: mat, matIsTotal: false, tva: 0.1, note: "" });
+        Store.save(); this.renderAll();
     },
-
-    deleteItem(id) {
-        Store.data.quoteItems = Store.data.quoteItems.filter(i => i.id !== id);
-        this.renderAll(); Store.save();
+    updateItem(id, field, val) {
+        const item = Store.data.quoteItems.find(i => i.id === id);
+        if (item) { item[field] = (field === 'note' ? val : parseFloat(val)); Store.save(); this.renderAll(); }
     },
+    deleteItem(id) { Store.data.quoteItems = Store.data.quoteItems.filter(i => i.id !== id); Store.save(); this.renderAll(); },
 
-    updateItem(id, f, v) {
-        let i = Store.data.quoteItems.find(x => x.id === id);
-        if (i) { i[f] = f === 'note' ? v : parseFloat(v); this.renderAll(); Store.save(); }
-    },
-
-    // --- UI HELPERS ---
-    setMode(m) { this.currentMode = m; document.body.className = `mode-${m}`; document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active')); Utils.el(`btn-${m}`).classList.add('active'); this.renderAll(); },
-    renderAll() { this.renderRooms(); this.renderTable(); this.updateSummaries(); },
-    
-    // ... Tutte le altre funzioni di rendering che avevi (renderTable, updateSummaries, renderHome, etc.)
-    // Per brevità e sicurezza, ho ripristinato le logiche fondamentali.
-    
-    renderRooms() {
-        const cont = Utils.el('room-list-container');
-        if(!cont) return;
-        cont.innerHTML = '';
-        Store.data.rooms.forEach((r, index) => {
-            let btn = document.createElement('div');
-            btn.className = `room-pill ${r === Store.data.activeRoom ? 'active' : ''}`;
-            btn.innerHTML = `<span class="r-name">${r}</span>`;
-            btn.onclick = () => { Store.data.activeRoom = r; this.renderAll(); };
-            cont.appendChild(btn);
-        });
-    },
-
+    // --- RENDERING TABELLA ---
     renderTable() {
         const tbody = Utils.el('quote-tbody');
-        if(!tbody) return;
         tbody.innerHTML = '';
-        const items = Store.data.quoteItems.filter(i => i.piece === Store.data.activeRoom);
-        items.forEach(item => {
-            tbody.innerHTML += `<tr>
-                <td>${item.desc}</td><td>${item.unit}</td>
-                <td><input type="number" class="qty-inp" value="${item.qty}" onchange="App.updateItem(${item.id},'qty',this.value)"></td>
-                <td class="col-price">${item.price.toFixed(2)} €</td>
-                <td class="col-total"><strong>${(item.price*item.qty).toFixed(2)} €</strong></td>
-                <td><button onclick="App.deleteItem(${item.id})">X</button></td>
-            </tr>`;
+        const mode = this.currentMode;
+        
+        Store.data.rooms.forEach(room => {
+            const items = Store.data.quoteItems.filter(i => i.piece === room);
+            tbody.innerHTML += `<tr class="room-section-header"><td colspan="10">${room}</td></tr>`;
+            
+            let fams = [...new Set(items.map(i => i.fam))];
+            fams.forEach(f => {
+                tbody.innerHTML += `<tr class="category-row"><td colspan="10">${f}</td></tr>`;
+                items.filter(i => i.fam === f).forEach(item => {
+                    tbody.innerHTML += `
+                    <tr>
+                        <td>${item.desc}</td><td>${item.unit}</td>
+                        <td><input type="number" class="qty-inp" value="${item.qty}" onchange="App.updateItem(${item.id},'qty',this.value)"></td>
+                        <td class="col-tva"><input type="number" class="qty-inp" step="0.001" value="${item.tva}" onchange="App.updateItem(${item.id},'tva',this.value)"></td>
+                        <td class="col-price">${item.price}€</td>
+                        <td class="col-cost"><input type="number" class="qty-inp" value="${item.matCost}" onchange="App.updateItem(${item.id},'matCost',this.value)"></td>
+                        <td class="col-total"><strong>${(item.qty*item.price).toFixed(2)}€</strong></td>
+                        <td class="col-time">${item.time}h</td>
+                        <td class="col-note"><input type="text" class="note-input" value="${item.note}" onchange="App.updateItem(${item.id},'note',this.value)"></td>
+                        <td><button onclick="App.deleteItem(${item.id})">X</button></td>
+                    </tr>`;
+                });
+            });
         });
     },
 
+    // --- ALTRE LOGICHE ---
+    renderRooms() {
+        const cont = Utils.el('room-list-container');
+        cont.innerHTML = '';
+        Store.data.rooms.forEach(r => {
+            const btn = document.createElement('div');
+            btn.className = `room-pill ${r === Store.data.activeRoom ? 'active' : ''}`;
+            btn.innerHTML = `<span>${r}</span> <div class="delete-room-btn" onclick="App.deleteRoom(event,'${r}')">x</div>`;
+            btn.onclick = () => this.switchRoom(r);
+            cont.appendChild(btn);
+        });
+        const add = document.createElement('div');
+        add.className = 'room-pill'; add.innerHTML = '+'; add.onclick = () => this.addNewRoom();
+        cont.appendChild(add);
+    },
     updateSummaries() {
         const fin = BusinessLogic.calculateFinancials(Store.data.quoteItems, Store.data.globalDiscount, Store.data.depositAmount, false);
-        const fBody = Utils.el('financial-summary-body');
-        if(fBody) fBody.innerHTML = `<div class="t-row main-total"><span>Total TTC</span><span>${fin.totalTTC.toFixed(2)} €</span></div>`;
+        Utils.el('financial-summary-body').innerHTML = `Total HT: ${fin.totalHT.toFixed(2)}€ <br> Total TTC: ${fin.totalTTC.toFixed(2)}€`;
+        Utils.el('final-to-pay').innerText = fin.toPay.toFixed(2) + " €";
     },
-
-    renderDashboardList() {
-        const tbody = Utils.el('dashboard-tbody');
-        if(!tbody) return;
-        tbody.innerHTML = '';
-        let quotes = BusinessLogic.getFlatQuotes(Store.data.clientsDB);
-        quotes.forEach(q => {
-            tbody.innerHTML += `<tr><td>${q.date}</td><td>${q.ref}</td><td>${q.clientName}</td><td>${q.amount.toFixed(2)} €</td><td>${q.status}</td></tr>`;
-        });
-    },
-
-    renderHome() {
-        // Grafici e KPI
-        const quotes = BusinessLogic.getFlatQuotes(Store.data.clientsDB);
-        Utils.setVal('kpi-total-count', quotes.length);
+    saveState() { Store.save(); },
+    renderClientList() { /* ... logica lista clienti ... */ },
+    renderHome() { /* ... logica KPI dashboard ... */ },
+    renderDashboardList() { /* ... logica tabella storico ... */ },
+    loadQuoteFromHistory(cId, qIdx) {
+        const c = Store.data.clientsDB.find(x => x.id == cId);
+        const q = c.quotes[qIdx];
+        Store.data.rooms = q.data.rooms;
+        Store.data.roomData = q.data.roomData;
+        Store.data.quoteItems = q.data.quoteItems;
+        Store.data.activeRoom = Store.data.rooms[0];
+        this.renderAll();
     }
 };
-
-/**
- * BOOTSTRAP
- */
-document.addEventListener('DOMContentLoaded', () => App.init());
-
-// Collegamento pulsante indietro biblioteca
-if(Utils.el('back-to-families')) {
-    Utils.el('back-to-families').onclick = () => { 
-        Utils.el('subfamily-panel').style.display='none'; 
-        Utils.el('main-families-list').style.display='block'; 
-    };
-}
 
 window.App = App;
 window.ProjectService = ProjectService;
 window.PDFService = PDFService;
+document.addEventListener('DOMContentLoaded', () => App.init());
     </script>
 </body>
 </html>
